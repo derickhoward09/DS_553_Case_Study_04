@@ -21,10 +21,13 @@ that request and is not stored in the image.
 
 ## Gemini image on Docker Hub
 
-After tests pass on `case-study-4`, GitHub Actions builds `Dockerfile.cloud`
+After tests pass on a push to `main` or `case-study-4`, including the push
+created by merging a pull request, GitHub Actions builds `Dockerfile.cloud`
 with `API_PROVIDER=gemini` and publishes `latest` and `sha-<full-commit-sha>`.
-Set the GitHub secrets `DOCKER_REPOSITORY` to the Docker Hub
-`namespace/image` and `DOCKER_API_KEY` to a token with image push permission.
+To publish manually, run the workflow from `case-study-4`.
+Set `DOCKER_REPOSITORY` to the Docker Hub `namespace/image` as a GitHub
+repository secret or variable. Set the `DOCKER_API_KEY` repository secret
+to a token with image push permission.
 If the token belongs to a different Docker Hub account than the repository
 namespace, set the repository variable `DOCKER_USERNAME` to that account.
 
