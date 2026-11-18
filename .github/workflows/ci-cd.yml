@@ -1,9 +1,9 @@
-name: Tests
+name: Tests and Docker Hub publish
 on:
   push:
-    branches: [main, local]
+    branches: [main, local, case-study-4]
   pull_request:
-    branches: [main, local]
+    branches: [main, local, case-study-4]
   workflow_dispatch:
 permissions:
   contents: read
@@ -18,3 +18,53 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: uv run --locked python -m pytest -q
+
+  publish:
+    if: github.ref == 'refs/heads/case-study-4' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve Docker Hub repository and username
+        id: docker
+        env:
+          DOCKER_REPOSITORY: ${{ secrets.DOCKER_REPOSITORY }}
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+        run: |
+          repository=${DOCKER_REPOSITORY#docker.io/}
+          if [[ ! "$repository" =~ ^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo "::error::Set DOCKER_REPOSITORY to an untagged Docker Hub namespace/image."
+            exit 1
+          fi
+          printf 'repository=%s\nusername=%s\n' "$repository" "${DOCKER_USERNAME:-${repository%%/*}}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ steps.docker.outputs.username }}
+          password: ${{ secrets.DOCKER_API_KEY }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Build and publish Gemini image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.cloud
+          build-args: API_PROVIDER=gemini
+          push: true
+          tags: |
+            ${{ steps.docker.outputs.repository }}:latest
+            ${{ steps.docker.outputs.repository }}:sha-${{ github.sha }}
+      - name: Verify published tags
+        env:
+          IMAGE_REPOSITORY: ${{ steps.docker.outputs.repository }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -o pipefail
+          for tag in latest "sha-${GITHUB_SHA}"; do
+            digest=$(docker buildx imagetools inspect "${IMAGE_REPOSITORY}:${tag}" \
+              | awk '/^Digest:/ {print $2}')
+            if [[ -z "$IMAGE_DIGEST" || "$digest" != "$IMAGE_DIGEST" ]]; then
+              echo "::error::Docker Hub tag ${tag} does not resolve to the built image."
+              exit 1
+            fi
+          done
+          printf 'Verified both Docker Hub tags at %s\n' "$IMAGE_DIGEST"

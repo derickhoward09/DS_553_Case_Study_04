@@ -11,6 +11,7 @@ from huggingface_hub import InferenceClient
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 from src.examples import EXAMPLES
+from src.gemini import GEMINI_MODELS, generate_review
 from src.prompts import REVIEW_TYPES, SYSTEM_PROMPT, build_prompt
 
 
@@ -22,8 +23,13 @@ PRODUCT_MODE = os.getenv("PRODUCT_MODE", "local").strip().lower()
 if PRODUCT_MODE not in {"api", "local"}:
     raise RuntimeError(f"PRODUCT_MODE must be 'api' or 'local', not {PRODUCT_MODE!r}")
 
+API_PROVIDER = os.getenv("API_PROVIDER", "huggingface").strip().lower()
+if API_PROVIDER not in {"huggingface", "gemini"}:
+    raise RuntimeError("API_PROVIDER must be 'huggingface' or 'gemini'")
+
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 APP_VERSION = os.getenv("APP_VERSION", "dev")
+APP_PORT = int(os.getenv("PORT", os.getenv("APP_PORT", "7860")))
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8000"))
 INFERENCE_TIMEOUT = float(os.getenv("INFERENCE_TIMEOUT", "300"))
 LOCAL_CONTEXT_SIZE = int(os.getenv("LOCAL_CONTEXT_SIZE", "4096"))
@@ -50,11 +56,19 @@ MODEL_LABELS = {
     LOCAL_BACKUP_MODEL: "LFM2.5 1.2B Q4_0 (backup)",
     REMOTE_PRIMARY_MODEL: "GPT-OSS 20B (primary)",
     REMOTE_BACKUP_MODEL: "GLM 5.3 Flash (backup)",
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite",
+    "gemini-3.5-flash": "Gemini 3.5 Flash",
 }
+
+
+def uses_gemini():
+    return PRODUCT_MODE == "api" and API_PROVIDER == "gemini"
 
 
 def product_models():
     """Return (primary, backup) model IDs for the active product."""
+    if uses_gemini():
+        return GEMINI_MODELS
     return PRODUCT_MODELS[PRODUCT_MODE]
 
 
@@ -304,6 +318,22 @@ def _route_review(
         models = [selected_model]
 
     common_args = (resume_text, review_type, job_description, max_tokens, temperature)
+    if uses_gemini():
+        prompt = _validated_prompt(resume_text, review_type, job_description)
+        api_key = os.getenv("GOOGLE_AGENT_PLATFORM_API_KEY", "").strip()
+        if not api_key:
+            raise _review_error(
+                "Gemini is unavailable because GOOGLE_AGENT_PLATFORM_API_KEY is missing.",
+                "missing_token",
+            )
+        return _review_with_failover(
+            models or list(GEMINI_MODELS),
+            lambda model_id: generate_review(
+                model_id, api_key, SYSTEM_PROMPT, prompt, int(max_tokens), INFERENCE_TIMEOUT
+            ),
+            "Gemini Agent Platform",
+            api_key,
+        )
     if PRODUCT_MODE == "api":
         return remote_resume_review(*common_args, hf_token, models=models)
     return local_resume_review(*common_args, models=models)
@@ -351,7 +381,9 @@ def model_picker_state(automatic_failover):
 PRIMARY_MODEL, BACKUP_MODEL = product_models()
 BUILD_INFO.labels(PRODUCT_MODE, APP_VERSION, PRIMARY_MODEL, BACKUP_MODEL).set(1)
 
-if PRODUCT_MODE == "api":
+if uses_gemini():
+    PRODUCT_DESCRIPTION = "Choose a Gemini model to review a resume through Google Agent Platform."
+elif PRODUCT_MODE == "api":
     PRODUCT_DESCRIPTION = (
         "Analyze a resume with a hosted model through the Hugging Face Inference API. "
         "Enter your own Hugging Face token in the sidebar; it is used only for your request."
@@ -371,12 +403,12 @@ with gr.Blocks(title="ResumeLens AI") as demo:
             type="password",
             placeholder="hf_...",
             info="Needs inference-provider permission. Not stored.",
-            visible=PRODUCT_MODE == "api",
+            visible=PRODUCT_MODE == "api" and not uses_gemini(),
         )
 
-        with gr.Accordion("Advanced settings", open=False):
+        with gr.Accordion("Advanced settings", open=uses_gemini()):
             automatic_failover = gr.Checkbox(
-                value=True,
+                value=not uses_gemini(),
                 label="Automatic failover",
                 info="Try the primary model, then the backup model.",
             )
@@ -384,7 +416,7 @@ with gr.Blocks(title="ResumeLens AI") as demo:
                 choices=[(MODEL_LABELS.get(m, m), m) for m in (PRIMARY_MODEL, BACKUP_MODEL)],
                 value=PRIMARY_MODEL,
                 label="Model",
-                interactive=False,
+                interactive=uses_gemini(),
             )
             max_tokens = gr.Slider(
                 minimum=256,
@@ -399,6 +431,7 @@ with gr.Blocks(title="ResumeLens AI") as demo:
                 value=0.3,
                 step=0.1,
                 label="Temperature",
+                visible=not uses_gemini(),
             )
 
     gr.Markdown(
@@ -460,4 +493,4 @@ if __name__ == "__main__":
     start_http_server(METRICS_PORT)
     if PRODUCT_MODE == "local":
         threading.Thread(target=_warm_local_model, daemon=True).start()
-    demo.launch(server_name="0.0.0.0", server_port=7860, root_path=ROOT_PATH, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=APP_PORT, root_path=ROOT_PATH, share=False)
