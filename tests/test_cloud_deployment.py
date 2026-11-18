@@ -14,8 +14,10 @@ def test_cloud_image_is_api_only_and_uses_one_ingress_port() -> None:
     dockerfile = (ROOT / "Dockerfile.cloud").read_text()
     requirements = (ROOT / "requirements-cloud.txt").read_text()
     assert "PRODUCT_MODE=api" in dockerfile
+    assert "INFERENCE_PROVIDER=huggingface" in dockerfile
     assert "EXPOSE 8080" in dockerfile
     assert "requirements-cloud.txt" in dockerfile
+    assert "google-genai" in requirements
     assert "prometheus-node-exporter" not in dockerfile
     assert "llama-cpp-python" not in requirements
 
@@ -28,7 +30,13 @@ def test_provider_scaffolding_has_no_embedded_credentials() -> None:
         ROOT / ".github/workflows/deploy-azure.yml",
     ]
     combined = "\n".join(path.read_text() for path in paths)
-    for forbidden in ("hf_", "AKIA", "client_secret=", "password="):
+    for forbidden in (
+        "hf_",
+        "AKIA",
+        "client_secret=",
+        "password=",
+        "GOOGLE_AGENT_PLATFORM_API_KEY=",
+    ):
         assert forbidden not in combined
 
 

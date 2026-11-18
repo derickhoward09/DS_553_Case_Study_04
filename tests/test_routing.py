@@ -87,6 +87,60 @@ def test_errors_redact_ui_token(monkeypatch):
     assert "[redacted]" in str(error.value)
 
 
+def test_vertex_provider_routes_without_hf_token(monkeypatch):
+    monkeypatch.setattr(app, "PRODUCT_MODE", "api")
+    monkeypatch.setattr(app, "INFERENCE_PROVIDER", "vertex")
+    vertex = Mock(return_value=("feedback", "info"))
+    remote = Mock()
+    monkeypatch.setattr(app, "vertex_resume_review", vertex)
+    monkeypatch.setattr(app, "remote_resume_review", remote)
+
+    assert app.analyze_resume(*ARGS, True, None, "") == ("feedback", "info")
+    vertex.assert_called_once()
+    remote.assert_not_called()
+    assert vertex.call_args.kwargs["models"] is None
+
+
+def test_vertex_key_is_required_at_runtime(monkeypatch):
+    monkeypatch.delenv("GOOGLE_AGENT_PLATFORM_API_KEY", raising=False)
+    with pytest.raises(app.gr.Error, match="API key is not configured"):
+        app.require_vertex_key()
+
+
+def test_vertex_request_uses_runtime_key_and_generation_settings(monkeypatch):
+    response = Mock(text=" feedback ")
+    client = Mock()
+    client.models.generate_content.return_value = response
+    constructor = Mock(return_value=client)
+    monkeypatch.setattr(app.genai, "Client", constructor)
+
+    result = app._run_vertex_model(
+        app.VERTEX_PRIMARY_MODEL, "google_test", "prompt", 512, 0.3
+    )
+
+    assert result == "feedback"
+    constructor.assert_called_once_with(enterprise=True, api_key="google_test")
+    request = client.models.generate_content.call_args.kwargs
+    assert request["model"] == app.VERTEX_PRIMARY_MODEL
+    assert request["contents"] == "prompt"
+    assert request["config"].max_output_tokens == 512
+
+
+def test_vertex_errors_redact_runtime_key(monkeypatch):
+    monkeypatch.setattr(app, "PRODUCT_MODE", "api")
+    monkeypatch.setattr(app, "INFERENCE_PROVIDER", "vertex")
+    monkeypatch.setenv("GOOGLE_AGENT_PLATFORM_API_KEY", "google_secret")
+    monkeypatch.setattr(
+        app,
+        "_run_vertex_model",
+        Mock(side_effect=RuntimeError("bad google_secret")),
+    )
+    with pytest.raises(app.gr.Error) as error:
+        app.analyze_resume(*ARGS, True, None, "")
+    assert "google_secret" not in str(error.value)
+    assert "[redacted]" in str(error.value)
+
+
 def test_remote_empty_response(monkeypatch):
     client = Mock()
     client.chat_completion.return_value = Mock(choices=[Mock(message=Mock(content=""), finish_reason="length")])

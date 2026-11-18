@@ -27,3 +27,23 @@ Then:
 
 The load balancer and running Fargate task can generate charges even when idle.
 Remove them after grading if continued availability is not required.
+
+## Optional Vertex AI inference
+
+The cloud image defaults to the original Hugging Face provider. To run the
+extra-credit Google Vertex AI Express Mode integration on ECS, configure these
+non-secret environment variables on the service:
+
+```text
+PRODUCT_MODE=api
+INFERENCE_PROVIDER=vertex
+APP_PORT=8080
+VERTEX_PRIMARY_MODEL=gemini-3.5-flash-lite
+VERTEX_BACKUP_MODEL=gemini-3.5-flash
+```
+
+Store the Google key in AWS Secrets Manager and map it to the container as the
+secret environment variable `GOOGLE_AGENT_PLATFORM_API_KEY`. Do not put the
+key in this repository, the Docker image, a Docker build argument, or a plain
+ECS environment variable. The ECS task execution role needs
+`secretsmanager:GetSecretValue` for that secret.

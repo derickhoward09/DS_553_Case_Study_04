@@ -19,11 +19,12 @@ Open <http://localhost:8080>, enter a personal Hugging Face inference token in
 the password field, and submit a synthetic resume. The token is used only for
 that request and is not stored in the image.
 
-## Gemini image on Docker Hub
+## Vertex AI Gemini image on Docker Hub
 
 After tests pass on a push to `main` or `case-study-4`, including the push
 created by merging a pull request, GitHub Actions builds `Dockerfile.cloud`
-with `API_PROVIDER=gemini` and publishes `latest` and `sha-<full-commit-sha>`.
+with `INFERENCE_PROVIDER=vertex` and publishes `latest` and
+`sha-<full-commit-sha>`.
 To publish manually, run the workflow from `case-study-4`.
 Set `DOCKER_REPOSITORY` to the Docker Hub `namespace/image` as a GitHub
 repository secret or variable. Set the `DOCKER_API_KEY` repository secret
@@ -38,6 +39,7 @@ your local `.env` and replace `namespace/image` with your Docker Hub repository.
 docker run --rm --env-file .env -p 8080:8080 namespace/image:latest
 ```
 
+The image uses the Google Gen AI SDK in Vertex AI/Agent Platform Express Mode.
 Select Gemini 3.5 Flash-Lite or Gemini 3.5 Flash in the sidebar. To run the
 image on a hosting platform, map its secret to the container's
 `GOOGLE_AGENT_PLATFORM_API_KEY` environment variable. The key must have

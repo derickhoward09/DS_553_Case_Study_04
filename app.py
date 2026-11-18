@@ -7,11 +7,12 @@ from pathlib import Path
 
 import gradio as gr
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 from huggingface_hub import InferenceClient
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 from src.examples import EXAMPLES
-from src.gemini import GEMINI_MODELS, generate_review
 from src.prompts import REVIEW_TYPES, SYSTEM_PROMPT, build_prompt
 
 
@@ -23,9 +24,15 @@ PRODUCT_MODE = os.getenv("PRODUCT_MODE", "local").strip().lower()
 if PRODUCT_MODE not in {"api", "local"}:
     raise RuntimeError(f"PRODUCT_MODE must be 'api' or 'local', not {PRODUCT_MODE!r}")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "huggingface").strip().lower()
-if API_PROVIDER not in {"huggingface", "gemini"}:
-    raise RuntimeError("API_PROVIDER must be 'huggingface' or 'gemini'")
+# The API product can use its original per-request Hugging Face credentials or
+# a server-side Google Agent Platform/Vertex AI Express Mode key. The Google key
+# is injected only at runtime (for example, from AWS Secrets Manager).
+INFERENCE_PROVIDER = os.getenv("INFERENCE_PROVIDER", "huggingface").strip().lower()
+if INFERENCE_PROVIDER not in {"huggingface", "vertex"}:
+    raise RuntimeError(
+        "INFERENCE_PROVIDER must be 'huggingface' or 'vertex', "
+        f"not {INFERENCE_PROVIDER!r}"
+    )
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 APP_VERSION = os.getenv("APP_VERSION", "dev")
@@ -46,6 +53,8 @@ LOCAL_MODEL_FILES = {
 }
 REMOTE_PRIMARY_MODEL = os.getenv("REMOTE_PRIMARY_MODEL", "openai/gpt-oss-20b")
 REMOTE_BACKUP_MODEL = os.getenv("REMOTE_BACKUP_MODEL", "zai-org/GLM-5.3-Flash")
+VERTEX_PRIMARY_MODEL = os.getenv("VERTEX_PRIMARY_MODEL", "gemini-3.5-flash-lite")
+VERTEX_BACKUP_MODEL = os.getenv("VERTEX_BACKUP_MODEL", "gemini-3.5-flash")
 
 PRODUCT_MODELS = {
     "local": (LOCAL_PRIMARY_MODEL, LOCAL_BACKUP_MODEL),
@@ -56,19 +65,19 @@ MODEL_LABELS = {
     LOCAL_BACKUP_MODEL: "LFM2.5 1.2B Q4_0 (backup)",
     REMOTE_PRIMARY_MODEL: "GPT-OSS 20B (primary)",
     REMOTE_BACKUP_MODEL: "GLM 5.3 Flash (backup)",
-    "gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite",
-    "gemini-3.5-flash": "Gemini 3.5 Flash",
+    VERTEX_PRIMARY_MODEL: "Gemini 3.5 Flash-Lite (primary)",
+    VERTEX_BACKUP_MODEL: "Gemini 3.5 Flash (backup)",
 }
 
 
-def uses_gemini():
-    return PRODUCT_MODE == "api" and API_PROVIDER == "gemini"
+def uses_vertex():
+    return PRODUCT_MODE == "api" and INFERENCE_PROVIDER == "vertex"
 
 
 def product_models():
     """Return (primary, backup) model IDs for the active product."""
-    if uses_gemini():
-        return GEMINI_MODELS
+    if uses_vertex():
+        return (VERTEX_PRIMARY_MODEL, VERTEX_BACKUP_MODEL)
     return PRODUCT_MODELS[PRODUCT_MODE]
 
 
@@ -307,6 +316,52 @@ def remote_resume_review(
     )
 
 
+# --- Google Agent Platform / Vertex AI Express Mode inference ---
+def require_vertex_key():
+    """Return the runtime-injected Google key without logging or displaying it."""
+    api_key = os.getenv("GOOGLE_AGENT_PLATFORM_API_KEY", "").strip()
+    if not api_key:
+        raise _review_error(
+            "Google Agent Platform API key is not configured.",
+            "missing_vertex_key",
+        )
+    return api_key
+
+
+def _run_vertex_model(model_id, api_key, prompt, max_tokens, temperature):
+    client = genai.Client(enterprise=True, api_key=api_key)
+    response = client.models.generate_content(
+        model=model_id,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            max_output_tokens=int(max_tokens),
+            temperature=float(temperature),
+            top_p=0.95,
+        ),
+    )
+    text = response.text or ""
+    if not text.strip():
+        raise RuntimeError("Vertex AI returned an empty response.")
+    return text.strip()
+
+
+def vertex_resume_review(
+    resume_text, review_type, job_description, max_tokens, temperature, models=None
+):
+    """Analyze a resume with Google-hosted Gemini models and model failover."""
+    prompt = _validated_prompt(resume_text, review_type, job_description)
+    api_key = require_vertex_key()
+    return _review_with_failover(
+        models or list(product_models()),
+        lambda model_id: _run_vertex_model(
+            model_id, api_key, prompt, max_tokens, temperature
+        ),
+        "Google Vertex AI Express Mode",
+        api_key,
+    )
+
+
 def _route_review(
     resume_text, review_type, job_description, max_tokens, temperature,
     automatic_failover, selected_model, hf_token,
@@ -318,23 +373,9 @@ def _route_review(
         models = [selected_model]
 
     common_args = (resume_text, review_type, job_description, max_tokens, temperature)
-    if uses_gemini():
-        prompt = _validated_prompt(resume_text, review_type, job_description)
-        api_key = os.getenv("GOOGLE_AGENT_PLATFORM_API_KEY", "").strip()
-        if not api_key:
-            raise _review_error(
-                "Gemini is unavailable because GOOGLE_AGENT_PLATFORM_API_KEY is missing.",
-                "missing_token",
-            )
-        return _review_with_failover(
-            models or list(GEMINI_MODELS),
-            lambda model_id: generate_review(
-                model_id, api_key, SYSTEM_PROMPT, prompt, int(max_tokens), INFERENCE_TIMEOUT
-            ),
-            "Gemini Agent Platform",
-            api_key,
-        )
     if PRODUCT_MODE == "api":
+        if INFERENCE_PROVIDER == "vertex":
+            return vertex_resume_review(*common_args, models=models)
         return remote_resume_review(*common_args, hf_token, models=models)
     return local_resume_review(*common_args, models=models)
 
@@ -381,8 +422,12 @@ def model_picker_state(automatic_failover):
 PRIMARY_MODEL, BACKUP_MODEL = product_models()
 BUILD_INFO.labels(PRODUCT_MODE, APP_VERSION, PRIMARY_MODEL, BACKUP_MODEL).set(1)
 
-if uses_gemini():
-    PRODUCT_DESCRIPTION = "Choose a Gemini model to review a resume through Google Agent Platform."
+if uses_vertex():
+    PRODUCT_DESCRIPTION = (
+        "Analyze a resume with Google Gemini through Vertex AI Express Mode. "
+        "The deployment reads its API key from a runtime secret; the key is not "
+        "stored in the image or entered in the web interface."
+    )
 elif PRODUCT_MODE == "api":
     PRODUCT_DESCRIPTION = (
         "Analyze a resume with a hosted model through the Hugging Face Inference API. "
@@ -403,12 +448,12 @@ with gr.Blocks(title="ResumeLens AI") as demo:
             type="password",
             placeholder="hf_...",
             info="Needs inference-provider permission. Not stored.",
-            visible=PRODUCT_MODE == "api" and not uses_gemini(),
+            visible=PRODUCT_MODE == "api" and INFERENCE_PROVIDER == "huggingface",
         )
 
-        with gr.Accordion("Advanced settings", open=uses_gemini()):
+        with gr.Accordion("Advanced settings", open=uses_vertex()):
             automatic_failover = gr.Checkbox(
-                value=not uses_gemini(),
+                value=not uses_vertex(),
                 label="Automatic failover",
                 info="Try the primary model, then the backup model.",
             )
@@ -416,7 +461,7 @@ with gr.Blocks(title="ResumeLens AI") as demo:
                 choices=[(MODEL_LABELS.get(m, m), m) for m in (PRIMARY_MODEL, BACKUP_MODEL)],
                 value=PRIMARY_MODEL,
                 label="Model",
-                interactive=uses_gemini(),
+                interactive=uses_vertex(),
             )
             max_tokens = gr.Slider(
                 minimum=256,
@@ -431,7 +476,7 @@ with gr.Blocks(title="ResumeLens AI") as demo:
                 value=0.3,
                 step=0.1,
                 label="Temperature",
-                visible=not uses_gemini(),
+                visible=not uses_vertex(),
             )
 
     gr.Markdown(
