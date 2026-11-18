@@ -7,17 +7,25 @@ Fargate. Case Study 4 deploys only the API-based product; the local llama.cpp
 product, Prometheus stack, Grafana, nginx, and ngrok configuration remain in
 the repository as the Case Study 3 implementation.
 
-Use synthetic or sanitized resumes for demonstrations. The Hugging Face token
-is entered in the API product's password field for each request and is not
-stored in the image or repository.
+Use synthetic or sanitized resumes for demonstrations. Case Study 4 uses
+Vertex AI Express Mode and reads `GOOGLE_AGENT_PLATFORM_API_KEY` only at
+runtime; no cloud credential is stored in the image or repository.
 
 ## Case Study 4 status
 
-The cloud-neutral implementation is complete and locally validated, but no
-claim is made that the three live cloud deployments are complete. Account
-creation, billing/budget configuration, provider authentication, live resource
-creation, public URL testing, class Google Sheet entries, and report evidence
-must be completed by the group in its own cloud accounts.
+The AWS deployment is live in ECS Express Mode in `us-east-2`:
+
+- Public application: <https://re-02876f5ce57d49f1a8d0dca2940fbcd9.ecs.us-east-2.on.aws/>
+- ECS service: `default/resumelens-api`
+- Runtime: Fargate, x86_64, 0.5 vCPU, 1 GiB memory, one desired task
+- Container port: 8080 behind the Express Mode HTTPS ingress/load balancer
+- Corrected Vertex image: `docker.io/akrett/resume-lens-api-app-mlops-cs553-wpi:sha-cb38c24d4968bdbf85e9caed44bd3c10a4d2bb8c`
+- AWS budgets: a $1 early-warning budget and a $5 monthly budget with actual
+  and forecast notifications
+
+The class Google Sheet entry and live GCP/Azure deployments remain manual
+course deliverables. The repository contains tested deployment scaffolding for
+those two providers but does not claim they are live.
 
 ### Implemented on this branch
 
@@ -36,20 +44,30 @@ must be completed by the group in its own cloud accounts.
   verifies the API product on Azure after the required secret and repository
   variables have been configured.
 - `tests/test_cloud_deployment.py` statically validates the cloud image and
-  provider scaffolding. The complete suite currently contains 49 tests.
+  provider scaffolding. The complete suite currently contains 53 tests.
+- Vertex inference uses the Google Gen AI SDK with
+  `genai.Client(vertexai=True, api_key=...)`, which is the Express Mode API-key
+  configuration shown in Google's current example. In `google-genai` 1.75,
+  `enterprise=True` and `vertexai=True` are aliases, so the selector change by
+  itself does not resolve authentication. The deployed revision still receives
+  a Vertex 401 stating that OAuth2 credentials are required. This points to the
+  supplied key/project mode rather than the ECS deployment or routing code.
 
-Local validation completed on November 17, 2026:
+Validation completed November 17--18, 2026:
 
-- 49 tests passed in both the normal local test configuration and API mode.
+- 53 tests passed.
 - All three provider shell scripts passed Bash syntax validation.
 - The AWS task-definition template parsed as valid JSON.
 - `Dockerfile.cloud` built successfully.
 - A live container smoke test served the application successfully with the
   nondefault provider-style setting `PORT=18080`.
 
-These checks demonstrate that the portable image and deployment inputs are
-internally consistent. They do not substitute for screenshots and successful
-requests from actual GCP, Azure, and AWS deployments.
+The AWS console additionally recorded task definition revision 6, an Active
+service, one running task, steady state, and a completed deployment. The public
+UI is operational. A real inference smoke test reaches Vertex but currently
+returns 401, so the extra-credit live sample remains blocked until a valid
+Express Mode Generative Language API key is installed, or the upgraded Google
+project is configured for OAuth/Application Default Credentials.
 
 ## Case Study 4 architecture and ports
 
@@ -57,7 +75,7 @@ Each provider runs the same API-only image:
 
 ```text
 browser -> provider HTTPS URL -> managed container ingress -> ResumeLens:8080
-                                                       -> Hugging Face Inference API
+                                                       -> Vertex AI Gemini
 ```
 
 The Case Study 3 host-port range `2100--2110` is not used by the managed cloud
@@ -88,8 +106,8 @@ docker run --rm -p 8080:8080 \
   resumelens-api:cs4
 ```
 
-Open <http://localhost:8080>, enter a personal Hugging Face inference token,
-and test with a synthetic resume. For code-only validation:
+Put the temporary Express Mode key in an untracked `.env`, start with
+`--env-file .env`, and test with a synthetic resume. For code-only validation:
 
 ```bash
 uv sync --locked
@@ -147,10 +165,22 @@ pushes run the tests but deliberately skip Azure login, build, deployment, and
 verification. The workflow does not need a Hugging Face token because users
 enter their own token in the UI.
 
-### AWS ECS Fargate
+### AWS ECS Fargate (completed live deployment)
 
-The group must create an AWS account, enable AWS Budgets alerts, authenticate
-the AWS CLI, and select a region.
+The group created an AWS account, configured AWS Budgets alerts, and deployed
+the public service with ECS Express Mode in `us-east-2`. Express Mode created
+the Fargate service, HTTPS public ingress, load balancer, target groups,
+security groups, CloudWatch log group, scaling policy, and deployment alarm.
+The application uses port 8080 and the provider-specific `PORT` fallback.
+
+Because the student account did not expose the IAM features needed to grant
+the task execution role `ssm:GetParameters`, the short-lived Vertex Express
+Mode key was temporarily supplied as a plaintext ECS task environment
+variable. This is acceptable only for the time-limited class demonstration;
+the key must be rotated after submission. A production deployment should use
+Secrets Manager or Parameter Store plus least-privilege IAM.
+
+The repository also includes the lower-level ECR/Fargate path:
 
 ```bash
 aws configure
@@ -171,7 +201,10 @@ consistent with container port 8080.
 
 Two workflows run on `case-study-4`:
 
-- `Tests` performs the repository test suite without deploying anything.
+- `Tests and Docker Hub publish` runs all 53 tests, builds `Dockerfile.cloud`,
+  publishes immutable `sha-<commit>` and `latest` tags, and verifies both tags
+  resolve to the build digest. Run 44262013429 published commit `cb38c24` at
+  digest `sha256:771b46a00d7939273af2e9317a86590ed3534299903bdd5c38bba53eb22db469`.
 - `Deploy API product to Azure Container Apps` first runs the tests, then logs
   into Azure, builds/pushes the image, deploys the Container App, and verifies
   its public URL when `AZURE_DEPLOY_ENABLED=true`. Otherwise it reports that
@@ -195,13 +228,13 @@ principal permissions, ACR existence, resource names, region, and quota.
 | Azure cost monitoring (3) | Pending manual setup | Configure budget/alerts and screenshot them |
 | Azure API deployment (10) | Script/image ready | Deploy, test a real request, and document changes |
 | Azure Sheet URL (4) | Pending live deployment | Enter external URL and screenshot the row |
-| AWS account (3) | Not representable in code | Create account and capture evidence |
-| AWS cost monitoring (3) | Pending manual setup | Configure AWS Budget/alerts and screenshot them |
-| AWS API deployment (10) | Image/task scaffold ready | Provision ECS/ALB, test, and document changes |
-| AWS Sheet URL (4) | Pending live deployment | Enter load-balancer URL and screenshot the row |
-| Project report (25) | Not completed by this scaffold | Names; three setup sections; challenges; full LLM prompt/model/response; provider decision |
-| GitHub Action (15) | Workflow implemented | Configure Azure settings and retain a successful automatic deployment run |
-| Vertex AI extra credit (+10) | Not implemented | Add Vertex inference, sample request/response, tests, and report documentation if attempted |
+| AWS account (3) | Completed | Retain account/free-tier screenshot |
+| AWS cost monitoring (3) | Completed | Retain the $1 and $5 budget screenshot and alert-email evidence |
+| AWS API deployment (10) | Live in ECS Express Mode | Retain revision 6 deployment and public-UI evidence |
+| AWS Sheet URL (4) | URL ready | Enter the public URL in the class Sheet and screenshot the row |
+| Project report (25) | Draft generated separately | Add group names and final GCP/Azure evidence before submission |
+| GitHub Action (15) | Automated test/build/publish verified | Docker Hub publishing is complete; automated ECS deployment is not implemented. Azure deployment runs only when its settings are enabled |
+| Vertex AI extra credit (+10) | Code path implemented; tests pass | Resolve the live Vertex 401, then retain a successful request/response |
 
 For every live provider deployment, retain the commit hash, budget screenshot,
 deployment/revision screenshot, public URL, successful synthetic request and
