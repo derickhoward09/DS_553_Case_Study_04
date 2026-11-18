@@ -1,10 +1,14 @@
 FROM python:3.11-slim-bookworm
 
+ARG API_PROVIDER=huggingface
+
+# Supply GOOGLE_AGENT_PLATFORM_API_KEY in the container's runtime environment.
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PRODUCT_MODE=api \
+    API_PROVIDER=${API_PROVIDER} \
     APP_PORT=8080
 
 RUN apt-get update \
