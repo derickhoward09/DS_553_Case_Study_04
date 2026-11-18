@@ -39,7 +39,9 @@ your local `.env` and replace `namespace/image` with your Docker Hub repository.
 docker run --rm --env-file .env -p 8080:8080 namespace/image:latest
 ```
 
-The image uses the Google Gen AI SDK in Vertex AI/Agent Platform Express Mode.
+The image uses the Google Gen AI SDK in Vertex AI/Agent Platform Express Mode
+with `genai.Client(vertexai=True, api_key=...)`, as required for Express Mode
+API-key authentication.
 Select Gemini 3.5 Flash-Lite or Gemini 3.5 Flash in the sidebar. To run the
 image on a hosting platform, map its secret to the container's
 `GOOGLE_AGENT_PLATFORM_API_KEY` environment variable. The key must have

@@ -329,7 +329,9 @@ def require_vertex_key():
 
 
 def _run_vertex_model(model_id, api_key, prompt, max_tokens, temperature):
-    client = genai.Client(enterprise=True, api_key=api_key)
+    # Express Mode API keys require the legacy ``vertexai`` selector.  The
+    # newer ``enterprise`` selector expects OAuth/ADC credentials instead.
+    client = genai.Client(vertexai=True, api_key=api_key)
     response = client.models.generate_content(
         model=model_id,
         contents=prompt,

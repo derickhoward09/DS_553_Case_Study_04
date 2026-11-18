@@ -119,7 +119,7 @@ def test_vertex_request_uses_runtime_key_and_generation_settings(monkeypatch):
     )
 
     assert result == "feedback"
-    constructor.assert_called_once_with(enterprise=True, api_key="google_test")
+    constructor.assert_called_once_with(vertexai=True, api_key="google_test")
     request = client.models.generate_content.call_args.kwargs
     assert request["model"] == app.VERTEX_PRIMARY_MODEL
     assert request["contents"] == "prompt"
